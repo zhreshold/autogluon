@@ -17,6 +17,7 @@ from ..models.ensemble.bagged_ensemble_model import BaggedEnsembleModel
 from ..trainer.model_presets.presets import get_preset_stacker_model
 from ..models.ensemble.stacker_ensemble_model import StackerEnsembleModel
 from ..models.ensemble.weighted_ensemble_model import WeightedEnsembleModel
+from ..trainer.model_presets.presets_distill import get_preset_models_distillation
 
 logger = logging.getLogger(__name__)
 
@@ -638,7 +639,7 @@ class AbstractTrainer:
         if isinstance(model, str):
             model = self.load_model(model)
         X = self.get_inputs_to_model(model=model, X=X, level_start=level_start, fit=False)
-        EPS = 1e-10 # predicted probabilities can be at most this confident if we normalize predicted probabilities
+        EPS = 1e-10  # predicted probabilities can be at most this confident if we normalize predicted probabilities
         # TODO: ensure each model always outputs appropriately normalized predictions so this final safety check then becomes unnecessary
         if not self.normalize_predprobs:
             return model.predict_proba(X=X, preprocess=False)
@@ -779,6 +780,134 @@ class AbstractTrainer:
         single_models = self.models_level[stack_name][stack_level]
         perfs = [self.model_performance[m] for m in single_models]
         return single_models[perfs.index(max(perfs))]
+
+    def distill(self, X=None, y=None):
+        if X is None:
+            X = self.load_X_train()
+        if y is None:
+            y = self.load_y_train()
+
+        model_best = self.load_model(self.model_best)
+        models_distill = get_preset_models_distillation(path=self.path, problem_type=self.problem_type,
+                                                        objective_func=self.objective_func,
+                                                        stopping_metric=self.stopping_metric,
+                                                        num_classes=self.num_classes,
+                                                        hyperparameters=self.hyperparameters)
+        if not self.bagged_mode:
+            raise NotImplementedError
+        if self.problem_type == MULTICLASS:
+            distillation_type = 'pure' # 'mixed' 'oof' 'pure' # TODO: remove, for prototyping only
+            if distillation_type == 'oof': # OOF distillation
+                print("using ensemble OOF preds for distillation")
+                y_distill = pd.DataFrame(model_best.oof_pred_proba)
+            elif distillation_type == 'pure': # Try and replicate ensemble exactly
+                print("using augmentation+pure ensemble in-fold preds for distillation")
+                X = self.augment_data_for_distill(X)
+                y_distill = pd.DataFrame(model_best.predict_proba(X))
+            else:
+                print("using mixed ensemble In-Fold preds + true_y for distillation")
+                y_distill = model_best.predict_proba(X)
+                y_distill = pd.DataFrame(combine_pred_and_true(y_distill, y, upweight_factor = 0.01))
+            og_bagged_mode = self.bagged_mode
+            og_verbosity = self.verbosity
+            self.bagged_mode = False # turn off bagging
+            self.verbosity = 4
+            X_train, X_test, y_train, y_test = generate_train_test_split(X, y_distill, problem_type=SOFTCLASS, test_size=0.1)
+            for model in models_distill:
+                model_distill = self.train_single_full(X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test, model=model,
+                                                           hyperparameter_tune=False, stack_name='distill')
+            self.bagged_mode = og_bagged_mode
+            self.verbosity = og_verbosity
+        else: # Binary/regression:
+            y_distill = pd.Series(model_best.oof_pred_proba)
+            # X_train, X_test, y_train, y_test = generate_train_test_split(X, y_distill, problem_type=REGRESSION, test_size=0.1)  # TODO: Do stratified for binary/multiclass!
+            # self.bagged_mode = False
+            # self.stack_new_level_core(X=X_train, y=y_train, X_test=X_test, y_test=y_test, models=models_distill, level=0, stack_name='distill', hyperparameter_tune=False, feature_prune=False)
+            # self.bagged_mode = True
+            self.stack_new_level_core(X=X, y=y_distill, models=models_distill, level=0,
+                                      stack_name='distilled', hyperparameter_tune=False,
+                                      feature_prune=False)
+            # TODO: Do stratified for binary/multiclass, folds are not aligned!
+            models_trained = self.stack_new_level_core(X=X, y=y_distill, models=models_distill, level=0, stack_name='distilled', hyperparameter_tune=False, feature_prune=False)
+            self.compress(X=X, y=y_distill, models=models_trained)
+
+        self.save()
+
+    def augment_data_for_distill(self, X, num_augmented_samples = 40000):
+        """ Generates synthetic datapoints for learning to mimic teacher model in distillation.
+            num_augmented_samples: number of total augmented data points to return (we add extra points to training set until this number is reached)
+            These data are independent samples from the marginal distribution of each feature
+        """
+        if len(X) > num_augmented_samples:
+            return X
+        CONTINUOUS_FEATURE_NOISE = 0.1 # we noise numeric features by this factor times their std-dev
+        num_augmented_samples = num_augmented_samples - len(X)
+        X_aug = pd.concat([X.iloc[[0]]]*num_augmented_samples)
+        X_aug.reset_index(drop=True, inplace=True)
+        continuous_types = ['float','int', 'datetime']
+        continuous_featnames = [] # these features will have shuffled values with added noise
+        for contype in continuous_types:
+            if contype in self.feature_types_metadata:
+                continuous_featnames += self.feature_types_metadata[contype]
+        for feature in X.columns:
+            feature_data = X[feature]
+            new_feature_data = feature_data.sample(n=num_augmented_samples, replace=True)
+            new_feature_data.reset_index(drop=True, inplace=True)
+            if feature in continuous_featnames:
+                noise = np.random.normal(scale=np.std(feature_data)*CONTINUOUS_FEATURE_NOISE, size=num_augmented_samples)
+                new_feature_data = new_feature_data + noise
+            X_aug[feature] = pd.Series(new_feature_data, index=X_aug.index)
+        X_aug.drop_duplicates(keep='first', inplace=True)
+        # print(X_aug)
+        X_aug = pd.concat([X_aug, X])
+        X_aug.reset_index(drop=True, inplace=True)
+        print("Augmented training dataset has %s datapoints" % X_aug.shape[0])
+        return X_aug
+
+    def augment_data_preserve_joint(self, X, num_augmented_samples = 40000, frac_feature_perturb=0.1):
+        """ Generates synthetic datapoints for learning to mimic teacher model in distillation.
+            num_augmented_samples: number of total augmented data points to return (we add extra points to training set until this number is reached)
+            frac_feature_perturb: fraction of features perturbed in each data point. Set smaller to ensure augmented samples remain closer to real data.
+            These data are NOT marginally sampled, rather we replace randomly selected subset of features for each datapoint. Larger subset -> augmented data is more different than original.
+        """
+        if len(X) > num_augmented_samples:
+            return X
+        if frac_feature_perturb > 1.0:
+            raise ValueError("frac_feature_perturb must be <= 1")
+        num_feature_perturb = max(1,int(frac_feature_perturb * len(X.columns)))
+        CONTINUOUS_FEATURE_NOISE = 0.05 # we noise numeric features by this factor times their std-dev
+        num_augmented_samples = num_augmented_samples - len(X)
+        X_aug = pd.concat([X.iloc[[0]]]*num_augmented_samples)
+        X_aug.reset_index(drop=True, inplace=True)
+        continuous_types = ['float','int', 'datetime']
+        continuous_featnames = [] # these features will have shuffled values with added noise
+        for contype in continuous_types:
+            if contype in self.feature_types_metadata:
+                continuous_featnames += self.feature_types_metadata[contype]
+
+        for i in range(num_augmented_samples): # hot-deck sample some features per datapoint
+            og_ind = i % len(X)
+            augdata_i = X.iloc[og_ind].copy()
+            cols_toperturb = np.random.choice(list(X.columns), size=num_feature_perturb, replace=False)
+            for feature in cols_toperturb:
+                feature_data = X[feature]
+                augdata_i[feature] = feature_data.sample(n=1).values[0]
+            X_aug.iloc[i] = augdata_i
+
+        for feature in X.columns:
+            if feature in continuous_featnames:
+                feature_data = X[feature]
+                aug_data = X_aug[feature]
+                noise = np.random.normal(scale=np.std(feature_data)*CONTINUOUS_FEATURE_NOISE, size=num_augmented_samples)
+                aug_data = aug_data + noise
+                X_aug[feature] = pd.Series(aug_data, index=X_aug.index)
+
+        X_aug.drop_duplicates(keep='first', inplace=True)
+        # print(X_aug)
+        X_aug = pd.concat([X_aug, X])
+        X_aug.reset_index(drop=True, inplace=True)
+        print("Augmented training dataset has %s datapoints" % X_aug.shape[0])
+        return X_aug
 
     def save_model(self, model):
         if self.low_memory:

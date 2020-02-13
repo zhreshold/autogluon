@@ -38,7 +38,7 @@ from .hyperparameters.searchspaces import get_default_searchspace
 
 warnings.filterwarnings("ignore", module='sklearn.preprocessing') # sklearn processing n_quantiles warning
 logger = logging.getLogger(__name__)
-EPS = 1e-10 # small number
+EPS = 1e-10  # small number
 
 
 # TODO: Gets stuck after infering feature types near infinitely in nyc-jiashenliu-515k-hotel-reviews-data-in-europe dataset, 70 GB of memory, c5.9xlarge

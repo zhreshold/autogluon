@@ -116,7 +116,7 @@ class TabularNNDataset:
             for feature in feature_type_map:
                 if feature_type_map[feature] == 'embed':
                     feature_colind = feature_arraycol_map[feature]
-                    data_list.append(mx.nd.array(processed_array[:,feature_colind], dtype='int32')) # array of ints with data for this embedding feature
+                    data_list.append(mx.nd.array(processed_array[:,feature_colind], dtype='int32'))  # array of ints with data for this embedding feature
                     self.data_desc.append("embed")
                     self.feature_dataindex_map[feature]  = len(data_list)-1
 
@@ -124,7 +124,7 @@ class TabularNNDataset:
             for feature in feature_type_map:
                 if feature_type_map[feature] == 'language':
                     feature_colinds = feature_arraycol_map[feature]
-                    data_list.append(mx.nd.array(processed_array[:,feature_colinds], dtype='int32')) # array of ints with data for this language feature
+                    data_list.append(mx.nd.array(processed_array[:,feature_colinds], dtype='int32'))  # array of ints with data for this language feature
                     self.data_desc.append("language")
                     self.feature_dataindex_map[feature]  = len(data_list)-1
 
@@ -132,14 +132,14 @@ class TabularNNDataset:
         if labels is not None:
             labels = np.array(labels)
             self.data_desc.append("label")
-            self.label_index = len(data_list) # To access data labels, use: self.dataset._data[self.label_index]
+            self.label_index = len(data_list)  # To access data labels, use: self.dataset._data[self.label_index]
             self.num_classes = None
             if self.problem_type == SOFTCLASS:
                 self.num_classes = labels.shape[1]
                 data_list.append(mx.nd.array(labels))
             else:
                 if self.problem_type == REGRESSION and labels.dtype != np.float32:
-                    labels = labels.astype('float32') # Convert to proper float-type if not already
+                    labels = labels.astype('float32')  # Convert to proper float-type if not already
                 elif self.problem_type in [BINARY, MULTICLASS]:
                     self.num_classes = len(set(labels))
                 data_list.append(mx.nd.array(labels.reshape(len(labels),1)))

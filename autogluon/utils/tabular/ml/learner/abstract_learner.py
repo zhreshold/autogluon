@@ -194,6 +194,18 @@ class AbstractLearner:
         trainer = self.load_trainer()
         trainer.distill(X=X, y=y)
 
+    def augment_distill(self, X=None, y=None, num_augmented_samples=50000):
+        if X is not None:
+            if y is None:
+                X, y = self.extract_label(X)
+            X = self.transform_features(X)
+            if self.problem_type != MULTICLASS and self.problem_type != SOFTCLASS:
+                y = self.label_cleaner.transform(y)
+        else:
+            y = None
+        trainer = self.load_trainer()
+        trainer.augment_distill(X=X, y=y, num_augmented_samples=num_augmented_samples)
+
     def fit_transform_features(self, X, y=None):
         for feature_generator in self.feature_generators:
             X = feature_generator.fit_transform(X, y)

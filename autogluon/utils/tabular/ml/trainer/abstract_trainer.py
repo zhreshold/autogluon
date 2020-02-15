@@ -802,7 +802,7 @@ class AbstractTrainer:
                 y_distill = pd.DataFrame(model_best.oof_pred_proba)
             elif distillation_type == 'pure': # Try and replicate ensemble exactly
                 print("using augmentation+pure ensemble in-fold preds for distillation")
-                X = self.augment_data_for_distill(X)
+                X = self.augment_data_preserve_joint(X)
                 y_distill = pd.DataFrame(model_best.predict_proba(X))
             else:
                 print("using mixed ensemble In-Fold preds + true_y for distillation")
@@ -830,18 +830,60 @@ class AbstractTrainer:
             # TODO: Do stratified for binary/multiclass, folds are not aligned!
             models_trained = self.stack_new_level_core(X=X, y=y_distill, models=models_distill, level=0, stack_name='distilled', hyperparameter_tune=False, feature_prune=False)
             self.compress(X=X, y=y_distill, models=models_trained)
-
+        
         self.save()
 
-    def augment_data_for_distill(self, X, num_augmented_samples = 40000):
+
+    def augment_distill(self, X=None, y=None, num_augmented_samples=50000):
+        og_bagged_mode = self.bagged_mode
+        og_verbosity = self.verbosity
+        self.bagged_mode = False # turn off bagging
+        self.verbosity = 4 # high verbosity for debugging  # TODO: remove
+        if X is None:
+            X = self.load_X_train()
+        if y is None:
+            y = self.load_y_train() # TODO: doesn't appear anywhere?
+
+        model_best = self.load_model(self.model_best)
+        models_distill = get_preset_models_distillation(path=self.path, problem_type=self.problem_type, 
+                                                        objective_func=self.objective_func, 
+                                                        stopping_metric=self.stopping_metric, 
+                                                        num_classes=self.num_classes, 
+                                                        hyperparameters=self.hyperparameters)
+        X = self.augment_data_preserve_joint(X, num_augmented_samples)
+        y_distill = model_best.predict_proba(X)
+        if self.problem_type == MULTICLASS:
+            y_distill = pd.DataFrame(y_distill)
+            X_train, X_test, y_train, y_test = generate_train_test_split(X, y_distill, problem_type=SOFTCLASS, test_size=0.1)
+        else:
+            if self.problem_type == BINARY:
+                EPS_bin2regress = 0.03
+                min_pred = np.min(y_distill)
+                max_pred = np.max(y_distill)
+                if min_pred < EPS_bin2regress or max_pred > 1 - EPS_bin2regress: # remap predicted probs to line that goes through: (min_y, EPS), (max_y, 1-EPS)
+                    y_distill =  EPS_bin2regress + ((1-2*EPS_bin2regress)/(max_pred-min_pred)) * (y_distill - min_pred)
+                self.normalize_predprobs = True # make sure resulting regression predictions will become normalized probabilities
+            y_distill = pd.Series(y_distill)
+            X_train, X_test, y_train, y_test = generate_train_test_split(X, y_distill, problem_type=REGRESSION, test_size=0.1)
+        for model in models_distill:
+            model_distill = self.train_single_full(X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test, model=model,
+                                                   hyperparameter_tune=False, stack_name='distill')
+        # reset trainer to old state:
+        self.bagged_mode = og_bagged_mode
+        self.verbosity = og_verbosity
+        self.save()
+
+    def augment_data_hotdeck(self, X, num_augmented_samples = 50000, continuous_feature_noise = 0.1):
         """ Generates synthetic datapoints for learning to mimic teacher model in distillation.
-            num_augmented_samples: number of total augmented data points to return (we add extra points to training set until this number is reached)
+            num_augmented_samples: number of total augmented data points to return (we add extra points to training set until this number is reached).
+            continuous_feature_noise: we noise numeric features by this factor times their std-dev.
             These data are independent samples from the marginal distribution of each feature
         """
         if len(X) > num_augmented_samples:
+            print("No data augmentation performed since training data is large enough.")
             return X
-        CONTINUOUS_FEATURE_NOISE = 0.1 # we noise numeric features by this factor times their std-dev
         num_augmented_samples = num_augmented_samples - len(X)
+        
         X_aug = pd.concat([X.iloc[[0]]]*num_augmented_samples)
         X_aug.reset_index(drop=True, inplace=True)
         continuous_types = ['float','int', 'datetime']
@@ -854,7 +896,7 @@ class AbstractTrainer:
             new_feature_data = feature_data.sample(n=num_augmented_samples, replace=True)
             new_feature_data.reset_index(drop=True, inplace=True)
             if feature in continuous_featnames:
-                noise = np.random.normal(scale=np.std(feature_data)*CONTINUOUS_FEATURE_NOISE, size=num_augmented_samples)
+                noise = np.random.normal(scale=np.std(feature_data)*continuous_feature_noise, size=num_augmented_samples)
                 new_feature_data = new_feature_data + noise
             X_aug[feature] = pd.Series(new_feature_data, index=X_aug.index)
         X_aug.drop_duplicates(keep='first', inplace=True)
@@ -864,18 +906,20 @@ class AbstractTrainer:
         print("Augmented training dataset has %s datapoints" % X_aug.shape[0])
         return X_aug
 
-    def augment_data_preserve_joint(self, X, num_augmented_samples = 40000, frac_feature_perturb=0.1):
+    def augment_data_preserve_joint(self, X, num_augmented_samples = 50000, frac_feature_perturb=0.1, continuous_feature_noise = 0.05):
         """ Generates synthetic datapoints for learning to mimic teacher model in distillation.
             num_augmented_samples: number of total augmented data points to return (we add extra points to training set until this number is reached)
             frac_feature_perturb: fraction of features perturbed in each data point. Set smaller to ensure augmented samples remain closer to real data.
+            continuous_feature_noise: we noise numeric features by this factor times their std-dev.
             These data are NOT marginally sampled, rather we replace randomly selected subset of features for each datapoint. Larger subset -> augmented data is more different than original.
         """
-        if len(X) > num_augmented_samples:
+        if len(X) >= num_augmented_samples:
+            print("No data augmentation performed since training data is large enough.")
             return X
         if frac_feature_perturb > 1.0:
             raise ValueError("frac_feature_perturb must be <= 1")
+        print("Augmenting training data with synthetic samples for distillation...")
         num_feature_perturb = max(1,int(frac_feature_perturb * len(X.columns)))
-        CONTINUOUS_FEATURE_NOISE = 0.05 # we noise numeric features by this factor times their std-dev
         num_augmented_samples = num_augmented_samples - len(X)
         X_aug = pd.concat([X.iloc[[0]]]*num_augmented_samples)
         X_aug.reset_index(drop=True, inplace=True)
@@ -898,7 +942,7 @@ class AbstractTrainer:
             if feature in continuous_featnames:
                 feature_data = X[feature]
                 aug_data = X_aug[feature]
-                noise = np.random.normal(scale=np.std(feature_data)*CONTINUOUS_FEATURE_NOISE, size=num_augmented_samples)
+                noise = np.random.normal(scale=np.std(feature_data)*continuous_feature_noise, size=num_augmented_samples)
                 aug_data = aug_data + noise
                 X_aug[feature] = pd.Series(aug_data, index=X_aug.index)
 
@@ -908,6 +952,46 @@ class AbstractTrainer:
         X_aug.reset_index(drop=True, inplace=True)
         print("Augmented training dataset has %s datapoints" % X_aug.shape[0])
         return X_aug
+
+    def augment_trade(self, X = None):
+        if X is None:
+            X = self.load_X_train()
+        # Convert X to numbers:
+        continuous_types = ['float','int', 'datetime']
+        continuous_featnames = [] # these features will have shuffled values with added noise
+        for contype in continuous_types:
+            if contype in self.feature_types_metadata:
+                continuous_featnames += self.feature_types_metadata[contype]
+        # Convert categoricals to int:
+        feature_levels = {}
+        for feature in X.columns:
+            if feature not in continuous_featnames:
+                feature_levels[feature] = {}
+                feature_vals = X[feature].copy()
+                feat_categories = sorted(list(feature_vals.unique()))
+                for j in range(len(feat_categories)):
+                    feat_category_j = feat_categories[j]
+                    feature_levels[feature][feat_category_j] = j
+                X.loc[:,feature] = pd.Series(feature_vals.map(feature_levels[feature]), index = X.index)
+            feature_data = X[feature]
+        # Save X:
+        X.to_csv("data4trade.csv", index=False)
+        import pickle
+        pickle.dump(continuous_featnames, open("continuous_features.p", "wb") )
+        """
+        # Script to reload:
+        import pandas as pd
+        import pickle
+        X = pd.read_csv("data4trade.csv")
+        continuous_featnames = pickle.load( open( "continuous_features.p", "rb" ) )
+        # Num categories for a categorical feature FEAT: len(X[FEAT].unique())
+        num_categories = {}
+        for feat in X.columns:
+            if feat not in continuous_featnames:
+                num_categories[feat] = len(X[feat].unique())
+        X = X.to_numpy()
+        """
+
 
     def save_model(self, model):
         if self.low_memory:

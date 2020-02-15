@@ -437,7 +437,7 @@ class TabularNeuralNetModel(AbstractModel):
         if self.problem_type == REGRESSION or not predict_proba:
             return preds.asnumpy().flatten() # return 1D numpy array
         elif self.problem_type == BINARY and predict_proba:
-            preds = preds[:,1].asnumpy() # for binary problems, only return P(Y==+1)
+            preds = preds[:,1].asnumpy()  # for binary problems, only return P(Y==+1)
             if self.stopping_metric == log_loss or self.objective_func == log_loss:
                 # Ensure nonzero predicted probabilities under log-loss:
                 min_pred = 0.0
@@ -449,9 +449,9 @@ class TabularNeuralNetModel(AbstractModel):
             # Ensure nonzero predicted probabilities under log-loss:
             preds = preds.asnumpy()
             most_negative_rowvals = np.clip(np.min(preds, axis=1), a_min=None, a_max=0)
-            preds = preds - most_negative_rowvals[:,None] # ensure nonnegative rows
-            preds = np.clip(preds, a_min = EPS, a_max = None) # ensure no zeros
-            return preds / preds.sum(axis=1, keepdims=1) # renormalize
+            preds = preds - most_negative_rowvals[:,None]  # ensure nonnegative rows
+            preds = np.clip(preds, a_min = EPS, a_max = None)  # ensure no zeros
+            return preds / preds.sum(axis=1, keepdims=1)  # renormalize
 
         return preds.asnumpy() # return 2D numpy array
 

@@ -829,7 +829,7 @@ class AbstractTrainer:
                                       feature_prune=False)
             # TODO: Do stratified for binary/multiclass, folds are not aligned!
             models_trained = self.stack_new_level_core(X=X, y=y_distill, models=models_distill, level=0, stack_name='distilled', hyperparameter_tune=False, feature_prune=False)
-            self.compress(X=X, y=y_distill, models=models_trained)
+            self.refit_single_full(X=X, y=y_distill, models=models_trained)
 
         self.save()
 

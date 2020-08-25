@@ -29,10 +29,11 @@ class TaskSchedulerV1(object):
             dist_ip_addrs=[]
         if 'localhost' not in dist_ip_addrs:
             dist_ip_addrs.insert(0, 'localhost')
-        cluster = SSHCluster(dist_ip_addrs, scheduler_options={"port": PORT_ID})
-        self._client = Client(cluster)
+        # cluster = SSHCluster(dist_ip_addrs, scheduler_options={"port": self.PORT_ID})
+        self._client = Client()
         self.scheduled_tasks = []
         self.finished_tasks = []
+        print(self._client.scheduler_info()['services'])
 
     @classmethod
     def upload_files(cls, files, **kwargs):
@@ -76,16 +77,12 @@ class TaskSchedulerV1(object):
         - milestone: config promoted to this milestone (next from resume_from)
         """
         # adding the task
-        job = self._client.submit(cls._run_dist_job, task.fn, task.args, task.resources.gpu_ids,
+        job = self._client.submit(self._run_dist_job, task.fn, task.args, task.resources.gpu_ids,
                                   resources={'process': task.resources.num_cpus, 'GPU': task.resources.num_gpus})
-        cls = TaskScheduler
-        if not task.resources.is_ready:
-            cls.resource_manager._request(task.resources)
-        job = cls._start_distributed_job(task, cls.resource_manager)
         new_dict = self._dict_from_task(task)
         new_dict['Job'] = job
-        with self.LOCK:
-            self.scheduled_tasks.append(new_dict)
+        self.scheduled_tasks.append(new_dict)
+        return job
 
     def run_job(self, task):
         """Run a training task to the scheduler (Sync).
@@ -96,19 +93,6 @@ class TaskSchedulerV1(object):
         return job.result()
 
     @staticmethod
-    def _start_distributed_job(task, resource_manager):
-        """Async Execute the job in remote and release the resources
-        """
-        logger.debug('\nScheduling {}'.format(task))
-        job = task.resources.node.submit(TaskScheduler._run_dist_job,
-                                         task.fn, task.args, task.resources.gpu_ids)
-        def _release_resource_callback(fut):
-            logger.debug('Start Releasing Resource')
-            resource_manager._release(task.resources)
-        job.add_done_callback(_release_resource_callback)
-        return job
-
-    @staticmethod
     def _run_dist_job(fn, args, gpu_ids):
         """Remote function Executing the task
         """
@@ -116,53 +100,29 @@ class TaskSchedulerV1(object):
             args['args'].pop('_default_config')
 
         if 'reporter' in args:
-            local_reporter = LocalStatusReporter()
-            dist_reporter = args['reporter']
-            args['reporter'] = local_reporter
+            pass
 
-        manager = mp.Manager()
-        return_list = manager.list()
-        def _worker(return_list, gpu_ids, args):
-            """Worker function in thec client
-            """
-            if len(gpu_ids) > 0:
-                # handle GPU devices
-                os.environ['CUDA_VISIBLE_DEVICES'] = ",".join(map(str, gpu_ids))
-                os.environ['MXNET_CUDNN_AUTOTUNE_DEFAULT'] = "0"
-
-            # running
-            try:
-                ret = fn(**args)
-            except AutoGluonEarlyStop:
-                ret = None
-            return_list.append(ret)
+        if len(gpu_ids) > 0:
+            # handle GPU devices
+            os.environ['CUDA_VISIBLE_DEVICES'] = ",".join(map(str, gpu_ids))
+            os.environ['MXNET_CUDNN_AUTOTUNE_DEFAULT'] = "0"
 
         try:
-            # start local progress
-            p = CustomProcess(target=_worker, args=(return_list, gpu_ids, args))
-            p.start()
-            if 'reporter' in args:
-                cp = Communicator.Create(p, local_reporter, dist_reporter)
-            p.join()
-        except Exception as e:
-            logger.error('Exception in worker process: {}'.format(e))
-        ret = return_list[0] if len(return_list) > 0 else None
+            ret = fn(**args)
+        except AutoGluonEarlyStop:
+            ret = None
+
         return ret
 
-    def _clean_task_internal(self, task_dict):
-        pass
-
     def _cleaning_tasks(self):
-        with self.LOCK:
-            new_scheduled_tasks = []
-            for task_dict in self.scheduled_tasks:
-                if task_dict['Job'].done():
-                    self._clean_task_internal(task_dict)
-                    self.finished_tasks.append(self._dict_from_task(task_dict))
-                else:
-                    new_scheduled_tasks.append(task_dict)
-            if len(new_scheduled_tasks) < len(self.scheduled_tasks):
-                self.scheduled_tasks = new_scheduled_tasks
+        new_scheduled_tasks = []
+        for task_dict in self.scheduled_tasks:
+            if task_dict['Job'].done():
+                self.finished_tasks.append(self._dict_from_task(task_dict))
+            else:
+                new_scheduled_tasks.append(task_dict)
+        if len(new_scheduled_tasks) < len(self.scheduled_tasks):
+            self.scheduled_tasks = new_scheduled_tasks
 
     def join_tasks(self):
         warn("scheduler.join_tasks() is now deprecated in favor of scheduler.join_jobs().",
@@ -181,7 +141,6 @@ class TaskSchedulerV1(object):
             except:
                 logger.error("Unexpected error:", sys.exc_info()[0])
                 raise
-            self._clean_task_internal(task_dict)
         self._cleaning_tasks()
 
     def shutdown(self):
@@ -190,7 +149,6 @@ class TaskSchedulerV1(object):
         warn("scheduler.shutdown() is now deprecated in favor of autogluon.done().",
              AutoGluonWarning)
         self.join_jobs()
-        self.remote_manager.shutdown()
 
     def state_dict(self, destination=None):
         """Returns a dictionary containing a whole state of the Scheduler

@@ -81,10 +81,10 @@ class TaskSchedulerV1(object):
         """
         # adding the task
         # job = self._client.submit(lambda x:x, range(10))
-        # job = self._client.submit(self._run_dist_job, task.fn, task.args, task.resources.gpu_ids,
-        #                           resources={'process': task.resources.num_cpus,
-        #                                      'GPU': task.resources.num_gpus})
-        job = self._client.submit(self._run_dist_job, task.fn, task.args, task.resources.gpu_ids)
+        job = self._client.submit(self._run_dist_job, task.fn, task.args, task.resources.gpu_ids,
+                                  resources={'process': task.resources.num_cpus,
+                                             'GPU': task.resources.num_gpus})
+        # job = self._client.submit(self._run_dist_job, task.fn, task.args, task.resources.gpu_ids)
         new_dict = self._dict_from_task(task)
         new_dict['Job'] = job
         self.scheduled_tasks.append(new_dict)

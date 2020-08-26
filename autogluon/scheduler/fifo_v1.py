@@ -245,7 +245,8 @@ class FIFOSchedulerV1(TaskSchedulerV1):
         logger.info(f'Num of Finished Tasks is {self.num_finished_tasks}')
         if num_trials is not None:
             logger.info(f'Num of Pending Tasks is {num_trials - self.num_finished_tasks}')
-            tbar = tqdm(range(self.num_finished_tasks, num_trials))
+            # tbar = tqdm(range(self.num_finished_tasks, num_trials))
+            tbar = range(self.num_finished_tasks, num_trials)
         else:
             # In this case, only stopping by time_out is used. We do not display
             # a progress bar then
@@ -342,7 +343,8 @@ class FIFOSchedulerV1(TaskSchedulerV1):
             # cls.resource_manager._request(task.resources)
             pass
         # reporter
-        reporter = DistStatusReporter(remote=task.resources.node)
+        # reporter = DistStatusReporter(remote=task.resources.node)
+        reporter = FakeReporter()
         task.args['reporter'] = reporter
         # Register pending evaluation
         self.searcher.register_pending(task.args['config'])
@@ -365,7 +367,8 @@ class FIFOSchedulerV1(TaskSchedulerV1):
         #     self.scheduled_tasks.append(task_dict)
 
     def _clean_task_internal(self, task_dict):
-        task_dict['ReporterThread'].join()
+        # task_dict['ReporterThread'].join()
+        pass
 
     def _add_checkpointing_to_job(self, job):
         def _save_checkpoint_callback(fut):

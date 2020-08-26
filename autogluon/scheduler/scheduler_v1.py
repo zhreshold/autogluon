@@ -4,7 +4,10 @@ import pickle
 import logging
 import sys
 import distributed
-from dask.distributed import Client, SSHCluster
+from dask.distributed import Client
+
+from distributed import progress
+from dask import compute, persist
 from warnings import warn
 import multiprocessing as mp
 from collections import OrderedDict
@@ -77,8 +80,9 @@ class TaskSchedulerV1(object):
         - milestone: config promoted to this milestone (next from resume_from)
         """
         # adding the task
-        job = self._client.submit(self._run_dist_job, task.fn, task.args, task.resources.gpu_ids,
-                                  resources={'process': task.resources.num_cpus, 'GPU': task.resources.num_gpus})
+        # job = self._client.submit(lambda x:x, range(10))
+        job = self._client.submit(self._run_dist_job, task.fn, task.args, task.resources.gpu_ids)
+        # resources={'process': task.resources.num_cpus, 'GPU': task.resources.num_gpus}
         new_dict = self._dict_from_task(task)
         new_dict['Job'] = job
         self.scheduled_tasks.append(new_dict)
@@ -111,6 +115,8 @@ class TaskSchedulerV1(object):
             ret = fn(**args)
         except AutoGluonEarlyStop:
             ret = None
+        except Exception as e:
+            ret = str(e)
 
         return ret
 
@@ -123,6 +129,7 @@ class TaskSchedulerV1(object):
                 new_scheduled_tasks.append(task_dict)
         if len(new_scheduled_tasks) < len(self.scheduled_tasks):
             self.scheduled_tasks = new_scheduled_tasks
+        logger.info(f'Num of Finished Tasks is {self.num_finished_tasks}')
 
     def join_tasks(self):
         warn("scheduler.join_tasks() is now deprecated in favor of scheduler.join_jobs().",
@@ -132,15 +139,23 @@ class TaskSchedulerV1(object):
     def join_jobs(self, timeout=None):
         """Wait all scheduled jobs to finish
         """
-        self._cleaning_tasks()
-        for task_dict in self.scheduled_tasks:
-            try:
-                task_dict['Job'].result(timeout=timeout)
-            except distributed.TimeoutError as e:
-                logger.error(str(e))
-            except:
-                logger.error("Unexpected error:", sys.exc_info()[0])
-                raise
+        _jobs = [j['Job'] for j in self.scheduled_tasks]
+        try:
+            progress(persist(_jobs), fifo_timeout=None)
+            logger.info('')
+        except distributed.TimeoutError as e:
+            logger.error(str(e))
+        except:
+            logger.error("Unexpected error:", sys.exc_info()[0])
+            raise
+        # for task_dict in self.scheduled_tasks:
+        #     try:
+        #         task_dict['Job'].result(timeout=timeout)
+        #     except distributed.TimeoutError as e:
+        #         logger.error(str(e))
+        #     except:
+        #         logger.error("Unexpected error:", sys.exc_info()[0])
+        #         raise
         self._cleaning_tasks()
 
     def shutdown(self):

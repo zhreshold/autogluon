@@ -41,8 +41,8 @@ def sample_config(args, config):
     return args
 
 class _autogluon_method(object):
-    SEED = mp.Value('i', 0)
-    LOCK = mp.Lock()
+    # SEED = mp.Value('i', 0)
+    # LOCK = mp.Lock()
     def __init__(self, f):
         self.f = f
         self.args = ezdict()
@@ -61,7 +61,7 @@ class _autogluon_method(object):
         logger.debug('Reporter Done!')
         kwargs['reporter'](done=True)
         return output
- 
+
     def register_args(self, default={}, **kwvars):
         if isinstance(default, (argparse.Namespace, argparse.ArgumentParser)):
             default = vars(default)
@@ -113,17 +113,18 @@ class _autogluon_method(object):
         return kw_spaces
 
     def _rand_seed(self):
-        _autogluon_method.SEED.value += 1
-        np.random.seed(_autogluon_method.SEED.value)
+        # _autogluon_method.SEED.value += 1
+        # np.random.seed(_autogluon_method.SEED.value)
+        np.random.seed()
 
     def __repr__(self):
         return repr(self.f)
 
 
 def args(default=None, **kwvars):
-    """Decorator for a Python training script that registers its arguments as hyperparameters. 
+    """Decorator for a Python training script that registers its arguments as hyperparameters.
        Each hyperparameter takes fixed value or is a searchable space, and the arguments may either be:
-       built-in Python objects (e.g. floats, strings, lists, etc.), AutoGluon objects (see :func:`autogluon.obj`), 
+       built-in Python objects (e.g. floats, strings, lists, etc.), AutoGluon objects (see :func:`autogluon.obj`),
        or AutoGluon search spaces (see :class:`autogluon.space.Int`, :class:`autogluon.space.Real`, etc.).
 
     Examples
@@ -150,7 +151,7 @@ def args(default=None, **kwvars):
 
 
 def func(**kwvars):
-    """Decorator for a function that registers its arguments as hyperparameters. 
+    """Decorator for a function that registers its arguments as hyperparameters.
        Each hyperparameter may take a fixed value or be a searchable space (autogluon.space).
 
     Returns
@@ -162,7 +163,7 @@ def func(**kwvars):
     --------
     >>> import autogluon as ag
     >>> from gluoncv.model_zoo import get_model
-    >>> 
+    >>>
     >>> @ag.func(pretrained=ag.space.Categorical(True, False))
     >>> def cifar_resnet(pretrained):
     ...     return get_model('cifar_resnet20_v1', pretrained=pretrained)
@@ -207,7 +208,7 @@ def func(**kwvars):
                         kwargs[k] = kwspaces[k].sample(**sub_config)
                     elif k in config:
                         kwargs[k] = config[k]
-                        
+
                 return self.func(*self.args, **kwargs)
 
         @functools.wraps(func)
@@ -221,7 +222,7 @@ def func(**kwvars):
     return registered_func
 
 def obj(**kwvars):
-    """Decorator for a Python class that registers its arguments as hyperparameters. 
+    """Decorator for a Python class that registers its arguments as hyperparameters.
        Each hyperparameter may take a fixed value or be a searchable space (autogluon.space).
 
     Returns

@@ -33,10 +33,9 @@ class TaskSchedulerV1(object):
         if 'localhost' not in dist_ip_addrs:
             dist_ip_addrs.insert(0, 'localhost')
         # cluster = SSHCluster(dist_ip_addrs, scheduler_options={"port": self.PORT_ID})
-        self._client = Client()
+        self._client = Client(resources={'process': 10, 'GPU': 10})
         self.scheduled_tasks = []
         self.finished_tasks = []
-        print(self._client.scheduler_info()['services'])
 
     @classmethod
     def upload_files(cls, files, **kwargs):
@@ -80,7 +79,6 @@ class TaskSchedulerV1(object):
         - milestone: config promoted to this milestone (next from resume_from)
         """
         # adding the task
-        # job = self._client.submit(lambda x:x, range(10))
         job = self._client.submit(self._run_dist_job, task.fn, task.args, task.resources.gpu_ids,
                                   resources={'process': task.resources.num_cpus,
                                              'GPU': task.resources.num_gpus})
@@ -143,7 +141,7 @@ class TaskSchedulerV1(object):
         """
         _jobs = [j['Job'] for j in self.scheduled_tasks]
         try:
-            progress(persist(_jobs), fifo_timeout=None)
+            progress(_jobs, fifo_timeout=timeout)
             logger.info('')
         except distributed.TimeoutError as e:
             logger.error(str(e))
